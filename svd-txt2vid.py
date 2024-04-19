@@ -4,7 +4,7 @@ from diffusers import StableVideoDiffusionPipeline
 from diffusers.utils import export_to_video
 
 pipe = StableVideoDiffusionPipeline.from_pretrained(
-    "stabilityai/stable-video-diffusion-img2vid-xt", torch_dtype=torch.float16, variant="fp16"
+    "C:\Production\Applied Science\Software\LocalSD\Models\stable-video-diffusion-img2vid-xt-1-1", torch_dtype=torch.float16, variant="fp16"
 )
 pipe.enable_model_cpu_offload()
 
