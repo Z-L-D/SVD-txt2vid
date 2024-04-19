@@ -1,6 +1,6 @@
 import torch
 
-from diffusers import StableVideoDiffusionPipeline
+from txt2vid_pipeline import StableVideoDiffusionPipeline
 from diffusers.utils import export_to_video
 
 pipe = StableVideoDiffusionPipeline.from_pretrained(

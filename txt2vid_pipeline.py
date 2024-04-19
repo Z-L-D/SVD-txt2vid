@@ -333,6 +333,9 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         return_dict: bool = True,
     ):
+         # 0. Default height and width to unet
+        height = height or self.unet.config.sample_size * self.vae_scale_factor
+        width = width or self.unet.config.sample_size * self.vae_scale_factor
         device = self._execution_device
 
         # Encode text input
