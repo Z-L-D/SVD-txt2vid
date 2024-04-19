@@ -1,6 +1,6 @@
 import torch
 
-from pipeline_mod import StableVideoDiffusionPipeline
+from txt2vid_pipeline import StableVideoDiffusionPipeline
 from diffusers.utils import load_image, export_to_video
 from transformers import AutoTokenizer, T5EncoderModel
 import argparse
