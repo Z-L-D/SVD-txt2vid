@@ -1,0 +1,12 @@
+diffusers
+transformers
+safetensors
+tokenizers
+xformers==0.0.24
+peft
+huggingface-hub
+sentencepiece
+protobuf
+tqdm
+pillow
+opencv-python
