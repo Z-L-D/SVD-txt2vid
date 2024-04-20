@@ -135,8 +135,6 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
         super().__init__()
 
         self.register_modules(
-            tokenizer=tokenizer,
-            text_encoder=text_encoder,
             vae=vae,
             image_encoder=image_encoder,
             unet=unet,
@@ -145,40 +143,6 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
         )
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
-
-    def _encode_text(
-        self,
-        prompt: str,
-        device: Union[str, torch.device],
-        num_videos_per_prompt: int,
-        do_classifier_free_guidance: bool,
-    ) -> torch.FloatTensor:
-        encoding = self.tokenizer.encode_plus(
-            prompt,
-            return_tensors="pt",
-            max_length=77,
-            truncation=True,
-            padding="max_length",
-        )
-
-        input_ids = encoding["input_ids"].to(device)
-        attention_mask = encoding["attention_mask"].to(device)
-
-        text_embeddings = self.text_encoder(input_ids, attention_mask=attention_mask)
-        text_embeddings = text_embeddings.last_hidden_state[:, 0, :]
-
-        if do_classifier_free_guidance:
-            negative_text_embeddings = torch.zeros_like(text_embeddings)
-
-            # For classifier free guidance, we need to do two forward passes.
-            # Here we concatenate the unconditional and text embeddings into a single batch
-            # to avoid doing two forward passes
-            text_embeddings = torch.cat([negative_text_embeddings, text_embeddings])
-
-        # duplicate text embeddings for each generation per prompt, using mps friendly method
-        text_embeddings = text_embeddings.repeat(num_videos_per_prompt, 1)
-
-        return text_embeddings
 
     def _encode_image(
         self,
@@ -260,8 +224,6 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
         batch_size: int,
         num_videos_per_prompt: int,
         do_classifier_free_guidance: bool,
-        text_embeddings: torch.FloatTensor,  # Add this parameter to pass text_embeddings
-        device: Union[str, torch.device],  # Add this parameter to specify the device
     ):
         add_time_ids = [fps, motion_bucket_id, noise_aug_strength]
 
@@ -273,15 +235,11 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
                 f"Model expects an added time embedding vector of length {expected_add_embed_dim}, but a vector of {passed_add_embed_dim} was created. The model has an incorrect config. Please check `unet.config.time_embedding_type` and `text_encoder_2.config.projection_dim`."
             )
 
-        add_time_ids = torch.tensor([add_time_ids], dtype=dtype, device=device)  # Ensure tensor is created on the right device
+        add_time_ids = torch.tensor([add_time_ids], dtype=dtype)
         add_time_ids = add_time_ids.repeat(batch_size * num_videos_per_prompt, 1)
 
-        # Here we concatenate the unconditional and text embeddings into a single batch
         if do_classifier_free_guidance:
             add_time_ids = torch.cat([add_time_ids, add_time_ids])
-
-        # Concatenate the text embeddings to the time identifiers for additional conditioning
-        add_time_ids = torch.cat([add_time_ids, text_embeddings], dim=-1)
 
         return add_time_ids
 
@@ -338,7 +296,6 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
         dtype: torch.dtype,
         device: Union[str, torch.device],
         generator: torch.Generator,
-        text_embeddings: Optional[torch.FloatTensor] = None,
         latents: Optional[torch.FloatTensor] = None,
     ):
         shape = (
@@ -359,17 +316,8 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
         else:
             latents = latents.to(device)
 
-        print("\n=============================================\n")
-        print("text_embeddings: ", text_embeddings)
-        print("\n=============================================\n")
-
-        # Check if text_embeddings is not None before using it
-        if text_embeddings is not None:
-            scale_factor = torch.mean(text_embeddings, dim=1, keepdim=True)
-            latents *= scale_factor
-
+        # scale the initial noise by the standard deviation required by the scheduler
         latents = latents * self.scheduler.init_noise_sigma
-
         return latents
 
     @property
@@ -394,7 +342,6 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
     def __call__(
         self,
         image: Union[PIL.Image.Image, List[PIL.Image.Image], torch.FloatTensor],
-        prompt: str,
         height: int = 576,
         width: int = 1024,
         num_frames: Optional[int] = None,
@@ -480,7 +427,6 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
                 returned, otherwise a `tuple` of (`List[List[PIL.Image.Image]]` or `np.ndarray` or `torch.FloatTensor`)
                 is returned.
         """
-
         # 0. Default height and width to unet
         height = height or self.unet.config.sample_size * self.vae_scale_factor
         width = width or self.unet.config.sample_size * self.vae_scale_factor
@@ -504,9 +450,8 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
         # corresponds to doing no classifier free guidance.
         self._guidance_scale = max_guidance_scale
 
-        # 3. Encode inputs
+        # 3. Encode input image
         image_embeddings = self._encode_image(image, device, num_videos_per_prompt, self.do_classifier_free_guidance)
-        text_embeddings = self._encode_text(prompt, device, num_videos_per_prompt, self.do_classifier_free_guidance)
 
         # NOTE: Stable Video Diffusion was conditioned on fps - 1, which is why it is reduced here.
         # See: https://github.com/Stability-AI/generative-models/blob/ed0997173f98eaf8f4edf7ba5fe8f15c6b877fd3/scripts/sampling/simple_video_sample.py#L188
@@ -546,8 +491,6 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
             batch_size,
             num_videos_per_prompt,
             self.do_classifier_free_guidance,
-            text_embeddings,
-            device  # Ensure to pass the device where tensors should be located
         )
         added_time_ids = added_time_ids.to(device)
 
@@ -567,7 +510,6 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
             device,
             generator,
             latents,
-            text_embeddings  # Passing text_embeddings as part of latents preparation
         )
 
         # 8. Prepare guidance scale

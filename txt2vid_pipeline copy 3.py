@@ -135,13 +135,13 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
         super().__init__()
 
         self.register_modules(
-            tokenizer=tokenizer,
-            text_encoder=text_encoder,
             vae=vae,
             image_encoder=image_encoder,
             unet=unet,
             scheduler=scheduler,
             feature_extractor=feature_extractor,
+            tokenizer=tokenizer,
+            text_encoder=text_encoder,
         )
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
@@ -256,32 +256,29 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
         fps: int,
         motion_bucket_id: int,
         noise_aug_strength: float,
-        dtype: torch.dtype,
+        text_dtype: torch.dtype,
+        image_dtype: torch.dtype,
         batch_size: int,
         num_videos_per_prompt: int,
         do_classifier_free_guidance: bool,
-        text_embeddings: torch.FloatTensor,  # Add this parameter to pass text_embeddings
-        device: Union[str, torch.device],  # Add this parameter to specify the device
     ):
         add_time_ids = [fps, motion_bucket_id, noise_aug_strength]
 
         passed_add_embed_dim = self.unet.config.addition_time_embed_dim * len(add_time_ids)
         expected_add_embed_dim = self.unet.add_embedding.linear_1.in_features
 
-        if expected_add_embed_dim != passed_add_embed_dim:
+        if expected_add_embed_dim!= passed_add_embed_dim:
             raise ValueError(
                 f"Model expects an added time embedding vector of length {expected_add_embed_dim}, but a vector of {passed_add_embed_dim} was created. The model has an incorrect config. Please check `unet.config.time_embedding_type` and `text_encoder_2.config.projection_dim`."
             )
 
-        add_time_ids = torch.tensor([add_time_ids], dtype=dtype, device=device)  # Ensure tensor is created on the right device
+        # Use the minimum dtype between text_dtype and image_dtype
+        dtype = torch.promote_types(text_dtype, image_dtype)
+        add_time_ids = torch.tensor([add_time_ids], dtype=dtype)
         add_time_ids = add_time_ids.repeat(batch_size * num_videos_per_prompt, 1)
 
-        # Here we concatenate the unconditional and text embeddings into a single batch
         if do_classifier_free_guidance:
             add_time_ids = torch.cat([add_time_ids, add_time_ids])
-
-        # Concatenate the text embeddings to the time identifiers for additional conditioning
-        add_time_ids = torch.cat([add_time_ids, text_embeddings], dim=-1)
 
         return add_time_ids
 
@@ -335,10 +332,10 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
         num_channels_latents: int,
         height: int,
         width: int,
-        dtype: torch.dtype,
+        text_dtype: torch.dtype,
+        image_dtype: torch.dtype,
         device: Union[str, torch.device],
         generator: torch.Generator,
-        text_embeddings: Optional[torch.FloatTensor] = None,
         latents: Optional[torch.FloatTensor] = None,
     ):
         shape = (
@@ -348,28 +345,22 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
             height // self.vae_scale_factor,
             width // self.vae_scale_factor,
         )
-        if isinstance(generator, list) and len(generator) != batch_size:
+        if isinstance(generator, list) and len(generator)!= batch_size:
             raise ValueError(
                 f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
                 f" size of {batch_size}. Make sure the batch size matches the length of the generators."
             )
+
+        # Use the minimum dtype between text_dtype and image_dtype
+        dtype = torch.promote_types(text_dtype, image_dtype)
 
         if latents is None:
             latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
         else:
             latents = latents.to(device)
 
-        print("\n=============================================\n")
-        print("text_embeddings: ", text_embeddings)
-        print("\n=============================================\n")
-
-        # Check if text_embeddings is not None before using it
-        if text_embeddings is not None:
-            scale_factor = torch.mean(text_embeddings, dim=1, keepdim=True)
-            latents *= scale_factor
-
+        # scale the initial noise by the standard deviation required by the scheduler
         latents = latents * self.scheduler.init_noise_sigma
-
         return latents
 
     @property
@@ -393,8 +384,8 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
     @replace_example_docstring(EXAMPLE_DOC_STRING)
     def __call__(
         self,
-        image: Union[PIL.Image.Image, List[PIL.Image.Image], torch.FloatTensor],
         prompt: str,
+        image: Union[PIL.Image.Image, List[PIL.Image.Image], torch.FloatTensor],
         height: int = 576,
         width: int = 1024,
         num_frames: Optional[int] = None,
@@ -480,7 +471,6 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
                 returned, otherwise a `tuple` of (`List[List[PIL.Image.Image]]` or `np.ndarray` or `torch.FloatTensor`)
                 is returned.
         """
-
         # 0. Default height and width to unet
         height = height or self.unet.config.sample_size * self.vae_scale_factor
         width = width or self.unet.config.sample_size * self.vae_scale_factor
@@ -504,9 +494,9 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
         # corresponds to doing no classifier free guidance.
         self._guidance_scale = max_guidance_scale
 
-        # 3. Encode inputs
-        image_embeddings = self._encode_image(image, device, num_videos_per_prompt, self.do_classifier_free_guidance)
+        # 3. Encode input text and input images
         text_embeddings = self._encode_text(prompt, device, num_videos_per_prompt, self.do_classifier_free_guidance)
+        image_embeddings = self._encode_image(image, device, num_videos_per_prompt, self.do_classifier_free_guidance)
 
         # NOTE: Stable Video Diffusion was conditioned on fps - 1, which is why it is reduced here.
         # See: https://github.com/Stability-AI/generative-models/blob/ed0997173f98eaf8f4edf7ba5fe8f15c6b877fd3/scripts/sampling/simple_video_sample.py#L188
@@ -542,12 +532,11 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
             fps,
             motion_bucket_id,
             noise_aug_strength,
+            text_embeddings.dtype,
             image_embeddings.dtype,
             batch_size,
             num_videos_per_prompt,
             self.do_classifier_free_guidance,
-            text_embeddings,
-            device  # Ensure to pass the device where tensors should be located
         )
         added_time_ids = added_time_ids.to(device)
 
@@ -563,11 +552,11 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
             num_channels_latents,
             height,
             width,
+            text_embeddings.dtype,
             image_embeddings.dtype,
             device,
             generator,
             latents,
-            text_embeddings  # Passing text_embeddings as part of latents preparation
         )
 
         # 8. Prepare guidance scale
@@ -586,52 +575,70 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+        
+                # Reshape text embeddings to match the dimensions of image embeddings
+                text_embeddings_reshaped = text_embeddings.unsqueeze(1)  # Add an extra dimension to make it [2, 1, 1280]
+                text_embeddings_reshaped = text_embeddings_reshaped[:, :, :1024]  # Truncate to match [2, 1, 1024]
+        
+                # Print the shapes of text_embeddings and image_embeddings
+                print("Text embeddings shape:", text_embeddings_reshaped.shape)
+                print("Image embeddings shape:", image_embeddings.shape)
 
-                # Concatenate image_latents over channels dimension
-                latent_model_input = torch.cat([latent_model_input, image_latents], dim=2)
+                # **Here, duplicate the channels in the input tensor to match the expected number of channels for the U-Net**
+                if latent_model_input.shape[2] == 4:  # Check if the channel dimension is 4
+                    latent_model_input = torch.cat([latent_model_input, latent_model_input], dim=2)  # Duplicate channels
 
+
+                # **Add this line to print the input sample shape**
+                print("Shape of latent_model_input:", latent_model_input.shape)
+                print("Shape of encoder_hidden_states:", torch.cat((text_embeddings_reshaped, image_embeddings), dim=1).shape)
+                ("Shape of added_time_ids:", added_time_ids.shape)
+
+                # Concatenate reshaped text and image embeddings to form encoder_hidden_states
+                encoder_hidden_states = torch.cat((text_embeddings_reshaped, image_embeddings), dim=1)
+                
+                # Print the shape of encoder_hidden_states to debug
+                print("encoder_hidden_states shape:", encoder_hidden_states.shape)                
+        
                 # predict the noise residual
                 noise_pred = self.unet(
                     latent_model_input,
                     t,
-                    encoder_hidden_states=image_embeddings,
+                    encoder_hidden_states=torch.cat((text_embeddings_reshaped, image_embeddings), dim=1),  # Concatenate reshaped text and image embeddings
                     added_time_ids=added_time_ids,
                     return_dict=False,
                 )[0]
-
+        
                 # perform guidance
                 if self.do_classifier_free_guidance:
                     noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
                     noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_cond - noise_pred_uncond)
-
+        
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents).prev_sample
-
+        
+                # update latents
+                latents = latents.detach().cpu().numpy()
+        
                 if callback_on_step_end is not None:
                     callback_kwargs = {}
                     for k in callback_on_step_end_tensor_inputs:
                         callback_kwargs[k] = locals()[k]
                     callback_outputs = callback_on_step_end(self, i, t, callback_kwargs)
-
+        
                     latents = callback_outputs.pop("latents", latents)
-
+        
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
 
-        if not output_type == "latent":
-            # cast back to fp16 if needed
-            if needs_upcasting:
-                self.vae.to(dtype=torch.float16)
-            frames = self.decode_latents(latents, num_frames, decode_chunk_size)
-            frames = tensor2vid(frames, self.image_processor, output_type=output_type)
-        else:
-            frames = latents
-
+        
+        frames = latents
+        
         self.maybe_free_model_hooks()
-
+        
         if not return_dict:
             return frames
-
+        
         return StableVideoDiffusionPipelineOutput(frames=frames)
 
 
