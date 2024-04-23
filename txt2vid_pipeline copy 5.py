@@ -207,70 +207,22 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
         num_videos_per_prompt: int,
         do_classifier_free_guidance: bool,
         negative_prompt=None,
-    ) -> torch.FloatTensor:
-        r"""
-        Encodes the prompt into text encoder hidden states.
-    
-        Args:
-            prompt (`str` or `List[str]`):
-                The prompt to be encoded.
-            device (`torch.device`):
-                The device on which the computation will be performed.
-            num_videos_per_prompt (`int`):
-                Number of videos that should be generated per prompt.
-            do_classifier_free_guidance (`bool`):
-                Whether to use classifier free guidance.
-            negative_prompt (`str` or `List[str]`, *optional*):
-                The prompt or prompts not to guide the image generation.
-        """
-        # Determine batch size based on prompt type
-        if isinstance(prompt, str):
-            prompts = [prompt]  # Convert to list for uniform processing
-            batch_size = 1
-        elif isinstance(prompt, list):
-            prompts = prompt
-            batch_size = len(prompt)
-        else:
-            raise TypeError("Prompt must be a string or list of strings.")
-        
-        print("\n==============\n")
-        print("prompt: ", prompt)
-        print("\n==============\n")
-    
-        # Tokenization and encoding
+    ):
+        # Tokenization
         text_inputs = self.tokenizer(
-            prompts,
+            prompt,
             padding="max_length",
             max_length=self.tokenizer.model_max_length,
             truncation=True,
             return_tensors="pt",
         )
-
-        print("\n==============\n")
-        print("text_inputs: ", text_inputs)
-        print("\n==============\n")
-
         input_ids = text_inputs.input_ids.to(device)
         attention_mask = text_inputs.attention_mask.to(device)
 
-        print("\n==============\n")
-        print("input_ids: ", input_ids)
-        print("attention_mask: ", attention_mask)
-        print("\n==============\n")
-    
         # Generate text embeddings
         text_embeddings = self.text_encoder(input_ids, attention_mask=attention_mask)
-
-        print("\n==============\n")
-        print("text_embeddings  = self.text_encoder: ", text_embeddings)
-        print("\n==============\n")
-
         text_embeddings = text_embeddings.last_hidden_state[:, 0, :]  # Take the first token (e.g., [CLS])
 
-        print("\n==============\n")
-        print("text_embeddings = text_embeddings.last_hidden_state: ", text_embeddings)
-        print("\n==============\n")
-    
         # Handling classifier free guidance by creating dummy negative embeddings
         if do_classifier_free_guidance:
             if negative_prompt:
@@ -289,13 +241,13 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
             else:
                 # Use zeros if no negative prompt provided
                 negative_text_embeddings = torch.zeros_like(text_embeddings)
-    
+
             # Combine normal and negative embeddings for guidance
             text_embeddings = torch.cat([text_embeddings, negative_text_embeddings])
-    
+
         # Duplicate embeddings for each generation per prompt
         text_embeddings = text_embeddings.repeat_interleave(num_videos_per_prompt, dim=0)
-    
+
         return text_embeddings
 
 
@@ -611,13 +563,12 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
         text_embeddings = self._encode_text(prompt, device, num_videos_per_prompt, self.do_classifier_free_guidance)
 
         # image_embeddings = text_embeddings
-        expanded_text_embeddings = text_embeddings.unsqueeze(1)
+        # expanded_text_embeddings = text_embeddings.unsqueeze(1)
 
-        image_embeddings = expanded_text_embeddings
+        # image_embeddings = expanded_text_embeddings
 
         print("\n=== #3. Encoding ============================\n")
         print(  "image_embeddings: ", image_embeddings)
-        print(  "expanded_text_embeddings: ", expanded_text_embeddings)
         print(  "text_embeddings: ", text_embeddings)
         print("\n=============================================\n")
 
@@ -642,6 +593,10 @@ class StableVideoDiffusionPipeline(DiffusionPipeline):
             do_classifier_free_guidance=self.do_classifier_free_guidance,
         )
         image_latents = image_latents.to(image_embeddings.dtype)
+
+        # print("\n=== #3. Encoding ============================\n")
+        # print(  "image_latents: ", image_latents)
+        # print("\n=============================================\n")
 
         # cast back to fp16 if needed
         if needs_upcasting:

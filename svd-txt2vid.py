@@ -61,8 +61,6 @@ import PIL.Image
 
 from txt2vid_pipeline import StableVideoDiffusionPipeline
 from diffusers.utils import load_image, export_to_video
-from transformers import CLIPTokenizer, CLIPTextModel, CLIPVisionModelWithProjection, CLIPImageProcessor
-from diffusers import AutoencoderKLTemporalDecoder, UNetSpatioTemporalConditionModel, EulerDiscreteScheduler
 
 pipe = StableVideoDiffusionPipeline.from_pretrained(
     "E:/Applications/LocalSD/Models/diffusers/models--stable-video-diffusion-img2vid-xt-1-1", torch_dtype=torch.float16, variant="fp16"
@@ -70,11 +68,11 @@ pipe = StableVideoDiffusionPipeline.from_pretrained(
 pipe.to("cuda")
 
 # Define the text input for conditioning
-text_input = "A futuristic cityscape at sunset with flying cars and neon signs."
+text_input = "Panning across the scene to the left"
 
 # Load the image input
 image = load_image(
-    "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/svd-docstring-example.jpeg"
+    "E:/Applications/LocalSD/DATASETS/00001-2184721316.png"
 )
 image = image.resize((1024, 576))
 
